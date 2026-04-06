@@ -53,6 +53,7 @@ class EstopSerialConfig:
     stale_reopen_timeout_sec: float = 20.0
     reconnect_interval_sec: float = 1.0
     allow_fallback_from_explicit_port: bool = False
+    state_debounce_sec: float = 0.08
 
     def __post_init__(self) -> None:
         if self.serial_port_candidates is None:
@@ -83,6 +84,9 @@ class EstopSerialInterface:
         self.stale_active = False
 
         self.triggered = True
+        self._raw_triggered = True
+        self._pending_state: Optional[bool] = None
+        self._pending_since = 0.0
         self.plugged_in = False
 
     def tick(self) -> None:
@@ -151,6 +155,12 @@ class EstopSerialInterface:
                 continue
 
             self._serial = ser
+            try:
+                # Use non-blocking reads during steady-state operation so the ROS
+                # executor can honor higher publish rates.
+                self._serial.timeout = 0.0
+            except Exception:
+                pass
             self.connected_port = port
             self.last_line_time = time.monotonic()
             self.stale_active = False
@@ -195,6 +205,7 @@ class EstopSerialInterface:
             while time.monotonic() < deadline and lines < max(1, self.config.probe_max_lines):
                 raw = ser.readline()
                 if not raw:
+                    time.sleep(0.001)
                     continue
 
                 lines += 1
@@ -204,7 +215,8 @@ class EstopSerialInterface:
 
                 parsed = parse_estop_line(decoded)
                 if parsed is not None:
-                    self.triggered = parsed
+                    self._raw_triggered = parsed
+                    self._apply_debounced_state(parsed, time.monotonic())
                     return ser
         except Exception:
             pass
@@ -219,16 +231,28 @@ class EstopSerialInterface:
         try:
             got_data = False
             while True:
+                waiting = 0
+                try:
+                    waiting = int(getattr(self._serial, "in_waiting", 0))
+                except Exception:
+                    waiting = 0
+
+                # In non-blocking mode, skip readline when no bytes are pending.
+                if waiting <= 0:
+                    break
+
                 raw = self._serial.readline()
                 if not raw:
                     break
 
                 got_data = True
-                self.last_line_time = now
+                line_now = time.monotonic()
+                self.last_line_time = line_now
                 line = raw.decode("utf-8", errors="replace").strip()
                 parsed = parse_estop_line(line)
                 if parsed is not None:
-                    self.triggered = parsed
+                    self._raw_triggered = parsed
+                    self._apply_debounced_state(parsed, line_now)
 
             if got_data and self.stale_active:
                 self.stale_active = False
@@ -252,6 +276,22 @@ class EstopSerialInterface:
         reopen_timeout = self.config.stale_reopen_timeout_sec
         if reopen_timeout > 0 and age > reopen_timeout:
             self._disconnect("serial data stale too long; reopening port")
+
+    def _apply_debounced_state(self, parsed: bool, now: float) -> None:
+        # Require state to remain stable for a short window before committing.
+        # This suppresses contact bounce and serial jitter-induced flip-flops.
+        if parsed == self.triggered:
+            self._pending_state = None
+            return
+
+        if self._pending_state != parsed:
+            self._pending_state = parsed
+            self._pending_since = now
+            return
+
+        if now - self._pending_since >= max(0.0, self.config.state_debounce_sec):
+            self.triggered = parsed
+            self._pending_state = None
 
     def _disconnect(self, reason: str, warn: bool = True) -> None:
         if self._serial is not None:

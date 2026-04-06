@@ -12,7 +12,8 @@ ROS 2 package to bridge an Arduino-based emergency stop button to:
 
 - Continuously attempts to connect to `/dev/ttyACM0` (configurable).
 - Parses serial lines from Arduino in format `ESTOP,0` / `ESTOP,1`.
-- Publishes status at fixed rate even when disconnected.
+- Publishes status at fixed rate (`50 Hz` default) even when disconnected.
+- Applies software debounce (`state_debounce_sec=0.08` default) to suppress spurious state flip-flops.
 - `plugged_in=false` when serial cannot be opened or data goes stale.
 - Fail-safe mode can force `triggered=true` while disconnected.
 
@@ -66,6 +67,18 @@ Or run node directly:
 ros2 run estop estop_node
 ```
 
+Override publish rate if needed:
+
+```bash
+ros2 run estop estop_node --ros-args -p publish_rate_hz:=200.0
+```
+
+If your wiring is noisy or the button bounces, increase debounce window:
+
+```bash
+ros2 run estop estop_node --ros-args -p state_debounce_sec:=0.15
+```
+
 If you see `package 'estop' not found`, source the workspace in the same shell you launch from:
 
 ```bash
@@ -104,11 +117,13 @@ ros2 run estop estop_raw_dds_subscriber -- --topic h12/estop_status_raw
 This directly exercises estop serial discovery + parsing:
 
 ```bash
-cd /home/humanoid/ws_ctrl
+cd /home/humanoid/ws_ctrl/src/estop
 conda deactivate
-source install/setup.bash
-ros2 run estop estop_serial_status_test -- --serial-port /dev/serial/by-id/usb-Arduino__www.arduino.cc__0043_55338343539351817262-if00 --require-estop-signature
+python3 scripts/estop_serial_test.py \
+  --serial-port /dev/serial/by-id/usb-Arduino__www.arduino.cc__0043_55338343539351817262-if00
 ```
+
+This script is fully outside ROS 2 (no `ros2 run`, no workspace sourcing).
 
 ## Safe unique estop port selection
 

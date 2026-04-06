@@ -49,7 +49,8 @@ class EstopNode(Node):
         self.declare_parameter("probe_max_lines", 200)
         self.declare_parameter("post_open_delay_sec", 0.25)
         self.declare_parameter("require_estop_signature", True)
-        self.declare_parameter("publish_rate_hz", 30.0)
+        self.declare_parameter("publish_rate_hz", 50.0)
+        self.declare_parameter("state_debounce_sec", 0.08)
         self.declare_parameter("line_stale_timeout_sec", 10.0)
         self.declare_parameter("stale_reopen_timeout_sec", 20.0)
         self.declare_parameter("reconnect_interval_sec", 1.0)
@@ -80,6 +81,7 @@ class EstopNode(Node):
             probe_max_lines=int(self.get_parameter("probe_max_lines").value),
             post_open_delay_sec=float(self.get_parameter("post_open_delay_sec").value),
             require_estop_signature=bool(self.get_parameter("require_estop_signature").value),
+            state_debounce_sec=float(self.get_parameter("state_debounce_sec").value),
             line_stale_timeout_sec=float(self.get_parameter("line_stale_timeout_sec").value),
             stale_reopen_timeout_sec=float(
                 self.get_parameter("stale_reopen_timeout_sec").value
