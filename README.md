@@ -6,8 +6,9 @@ ROS 2 package to bridge an Arduino-based emergency stop button to:
   - `/estop/triggered` (`std_msgs/Bool`)
   - `/estop/plugged_in` (`std_msgs/Bool`)
 - Optional raw CycloneDDS topic:
-  - `h12/estop_status_raw` (type `h12.estop.EstopStatusRaw`, fields: `triggered` (`bool`), `plugged_in` (`bool`), `sequence_id` (`int`), `stamp_ms` (`int`, epoch time)
-)
+  - `h12/estop_status_raw`
+    - type `h12.estop.EstopStatusRaw`
+    - fields: `triggered` (`bool`), `plugged_in` (`bool`), `sequence_id` (`int`), `stamp_ms` (`int`, epoch time)
 
 ## Behavior
 
