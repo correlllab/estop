@@ -17,7 +17,7 @@ ROS 2 package to bridge an Arduino-based emergency stop button to:
 - Publishes status at fixed rate (`50 Hz` default) even when disconnected.
 - Applies software debounce (`state_debounce_sec=0.08` default) to suppress spurious state flip-flops.
 - `plugged_in=false` when serial cannot be opened or data goes stale.
-- Fail-safe mode can force `triggered=true` while disconnected.
+- NOTE: Fail-safe mode forces `triggered=true` while disconnected.
 
 ## Architecture
 
