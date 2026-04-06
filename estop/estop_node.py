@@ -1,25 +1,13 @@
 #!/usr/bin/env python3
 import importlib
-import glob
 import time
 from dataclasses import dataclass
-from typing import Optional
 
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Bool
 
-try:
-    serial = importlib.import_module("serial")
-    SerialException = getattr(serial, "SerialException", Exception)
-except Exception:
-    serial = None
-    SerialException = Exception
-
-try:
-    list_ports = importlib.import_module("serial.tools.list_ports")
-except Exception:
-    list_ports = None
+from estop.serial_interface import EstopSerialConfig, EstopSerialInterface
 
 try:
     DomainParticipant = importlib.import_module("cyclonedds.domain").DomainParticipant
@@ -57,33 +45,20 @@ class EstopNode(Node):
         self.declare_parameter("usb_pid", -1)
         self.declare_parameter("baud_rate", 115200)
         self.declare_parameter("serial_timeout_sec", 0.02)
-        self.declare_parameter("probe_timeout_sec", 1.0)
-        self.declare_parameter("probe_max_lines", 100)
+        self.declare_parameter("probe_timeout_sec", 3.0)
+        self.declare_parameter("probe_max_lines", 200)
+        self.declare_parameter("post_open_delay_sec", 0.25)
         self.declare_parameter("require_estop_signature", True)
         self.declare_parameter("publish_rate_hz", 30.0)
-        self.declare_parameter("line_stale_timeout_sec", 5.0)
+        self.declare_parameter("line_stale_timeout_sec", 10.0)
+        self.declare_parameter("stale_reopen_timeout_sec", 20.0)
         self.declare_parameter("reconnect_interval_sec", 1.0)
+        self.declare_parameter("allow_fallback_from_explicit_port", False)
         self.declare_parameter("fail_safe_triggered_on_disconnect", True)
         self.declare_parameter("raw_dds_enabled", True)
         self.declare_parameter("raw_dds_topic", "h12/estop_status_raw")
 
-        self.serial_port = str(self.get_parameter("serial_port").value)
-        self.serial_port_candidates = list(
-            self.get_parameter("serial_port_candidates").value
-        )
-        self.serial_number = str(self.get_parameter("serial_number").value)
-        self.usb_vid = int(self.get_parameter("usb_vid").value)
-        self.usb_pid = int(self.get_parameter("usb_pid").value)
-        self.baud_rate = int(self.get_parameter("baud_rate").value)
-        self.serial_timeout_sec = float(self.get_parameter("serial_timeout_sec").value)
-        self.probe_timeout_sec = float(self.get_parameter("probe_timeout_sec").value)
-        self.probe_max_lines = int(self.get_parameter("probe_max_lines").value)
-        self.require_estop_signature = bool(
-            self.get_parameter("require_estop_signature").value
-        )
         self.publish_rate_hz = float(self.get_parameter("publish_rate_hz").value)
-        self.line_stale_timeout_sec = float(self.get_parameter("line_stale_timeout_sec").value)
-        self.reconnect_interval_sec = float(self.get_parameter("reconnect_interval_sec").value)
         self.fail_safe_on_disconnect = bool(
             self.get_parameter("fail_safe_triggered_on_disconnect").value
         )
@@ -93,15 +68,34 @@ class EstopNode(Node):
         self.triggered_pub = self.create_publisher(Bool, "estop/triggered", 10)
         self.plugged_pub = self.create_publisher(Bool, "estop/plugged_in", 10)
 
-        self._serial: Optional[object] = None
-        self._connected_port = ""
-        self._next_connect_try = 0.0
-        self._last_line_time = 0.0
-        self._stale_active = False
+        serial_cfg = EstopSerialConfig(
+            serial_port=str(self.get_parameter("serial_port").value),
+            serial_port_candidates=list(self.get_parameter("serial_port_candidates").value),
+            serial_number=str(self.get_parameter("serial_number").value),
+            usb_vid=int(self.get_parameter("usb_vid").value),
+            usb_pid=int(self.get_parameter("usb_pid").value),
+            baud_rate=int(self.get_parameter("baud_rate").value),
+            serial_timeout_sec=float(self.get_parameter("serial_timeout_sec").value),
+            probe_timeout_sec=float(self.get_parameter("probe_timeout_sec").value),
+            probe_max_lines=int(self.get_parameter("probe_max_lines").value),
+            post_open_delay_sec=float(self.get_parameter("post_open_delay_sec").value),
+            require_estop_signature=bool(self.get_parameter("require_estop_signature").value),
+            line_stale_timeout_sec=float(self.get_parameter("line_stale_timeout_sec").value),
+            stale_reopen_timeout_sec=float(
+                self.get_parameter("stale_reopen_timeout_sec").value
+            ),
+            reconnect_interval_sec=float(self.get_parameter("reconnect_interval_sec").value),
+            allow_fallback_from_explicit_port=bool(
+                self.get_parameter("allow_fallback_from_explicit_port").value
+            ),
+        )
+        self._serial_if = EstopSerialInterface(
+            config=serial_cfg,
+            log_info=self.get_logger().info,
+            log_warn=self.get_logger().warn,
+            log_error=self.get_logger().error,
+        )
 
-        # Fail-safe default until we can confirm device state.
-        self._triggered = True
-        self._plugged_in = False
         self._sequence_id = 0
 
         self._dds_writer = None
@@ -110,8 +104,9 @@ class EstopNode(Node):
         self.create_timer(0.02, self._io_tick)
         self.create_timer(1.0 / max(1.0, self.publish_rate_hz), self._publish_tick)
 
+        serial_port_label = serial_cfg.serial_port or "AUTO"
         self.get_logger().info(
-            f"Started estop node (serial_port='{self.serial_port or 'AUTO'}', baud={self.baud_rate})"
+            f"Started estop node (serial_port='{serial_port_label}', baud={serial_cfg.baud_rate})"
         )
 
     def _init_raw_dds(self) -> None:
@@ -137,188 +132,17 @@ class EstopNode(Node):
             self.get_logger().error(f"Failed to initialize raw DDS publisher: {exc}")
             self._dds_writer = None
 
-    def _connect_serial(self) -> None:
-        if serial is None:
-            self._plugged_in = False
-            self.get_logger().error("pyserial is not installed; cannot read estop serial")
-            return
-
-        now = time.monotonic()
-        if now < self._next_connect_try or self._serial is not None:
-            return
-
-        candidates = self._candidate_ports()
-        if not candidates:
-            self._plugged_in = False
-            self._next_connect_try = now + self.reconnect_interval_sec
-            return
-
-        for port in candidates:
-            ser = self._open_and_probe(port)
-            if ser is None:
-                continue
-
-            self._serial = ser
-            self._connected_port = port
-            self._last_line_time = now
-            self._plugged_in = True
-            self.get_logger().info(f"Connected to estop device on {port}")
-            return
-
-        self._serial = None
-        self._connected_port = ""
-        self._plugged_in = False
-        self._next_connect_try = now + self.reconnect_interval_sec
-
-    def _candidate_ports(self) -> list:
-        if self.serial_port.strip():
-            return [self.serial_port.strip()]
-
-        candidates = []
-
-        if list_ports is not None:
-            try:
-                for info in list_ports.comports():
-                    if self.usb_vid >= 0 and info.vid != self.usb_vid:
-                        continue
-                    if self.usb_pid >= 0 and info.pid != self.usb_pid:
-                        continue
-                    if self.serial_number and (info.serial_number or "") != self.serial_number:
-                        continue
-                    if info.device:
-                        candidates.append(info.device)
-            except Exception:
-                pass
-
-        if not candidates:
-            for pattern in self.serial_port_candidates:
-                candidates.extend(glob.glob(str(pattern)))
-
-        deduped = sorted(set(candidates), key=lambda p: (0 if "/dev/serial/by-id/" in p else 1, p))
-        return deduped
-
-    def _open_and_probe(self, port: str):
-        try:
-            ser = serial.Serial(port, self.baud_rate, timeout=self.serial_timeout_sec)
-            ser.reset_input_buffer()
-        except Exception:
-            return None
-
-        if not self.require_estop_signature:
-            return ser
-
-        deadline = time.monotonic() + max(0.05, self.probe_timeout_sec)
-        lines = 0
-        try:
-            while time.monotonic() < deadline and lines < max(1, self.probe_max_lines):
-                raw = ser.readline()
-                if not raw:
-                    continue
-                lines += 1
-                line = raw.decode("utf-8", errors="replace").strip()
-                if line.startswith("ESTOP,BOOT"):
-                    return ser
-                parsed = self._parse_estop_line(line)
-                if parsed is not None:
-                    self._triggered = parsed
-                    return ser
-        except Exception:
-            pass
-
-        try:
-            ser.close()
-        except Exception:
-            pass
-        return None
-
-    def _disconnect_serial(self, reason: str) -> None:
-        if self._serial is not None:
-            try:
-                self._serial.close()
-            except Exception:
-                pass
-        self._serial = None
-        self._connected_port = ""
-        self._plugged_in = False
-        self._next_connect_try = time.monotonic() + self.reconnect_interval_sec
-        self._stale_active = False
-        self.get_logger().warn(f"Serial disconnected: {reason}")
-
-    def _parse_estop_line(self, line: str) -> Optional[bool]:
-        # Preferred format from Arduino sketch: "ESTOP,0" or "ESTOP,1"
-        if line.startswith("ESTOP,"):
-            value = line.split(",", 1)[1].strip()
-            if value == "1":
-                return True
-            if value == "0":
-                return False
-            return None
-
-        upper = line.upper()
-
-        # Backward compatibility with current test sketch output.
-        if "E-STOP TRIGGERED" in upper:
-            return True
-
-        if "E-STOP CLEAR" in upper or "E-STOP RELEASED" in upper:
-            return False
-
-        return None
-
     def _io_tick(self) -> None:
-        if self._serial is None:
-            self._connect_serial()
-            return
-
-        try:
-            received_any = False
-            while True:
-                raw = self._serial.readline()
-                if not raw:
-                    break
-
-                received_any = True
-                self._last_line_time = time.monotonic()
-                line = raw.decode("utf-8", errors="replace").strip()
-                parsed = self._parse_estop_line(line)
-                if parsed is not None:
-                    self._triggered = parsed
-                    if not self._plugged_in:
-                        self.get_logger().info(
-                            f"Estop serial data stream active on {self._connected_port}"
-                        )
-
-            if received_any:
-                self._plugged_in = True
-                if self._stale_active:
-                    self._stale_active = False
-                    self.get_logger().info(
-                        f"Estop serial stream recovered on {self._connected_port}"
-                    )
-
-            if time.monotonic() - self._last_line_time > self.line_stale_timeout_sec:
-                if not self._stale_active:
-                    self._stale_active = True
-                    self.get_logger().warn(
-                        "Serial data stale; keeping port open and waiting for stream recovery"
-                    )
-                self._plugged_in = False
-        except SerialException as exc:
-            self._disconnect_serial(str(exc))
-        except OSError as exc:
-            self._disconnect_serial(str(exc))
+        self._serial_if.tick()
 
     def close(self) -> None:
-        if self._serial is not None:
-            try:
-                self._serial.close()
-            except Exception:
-                pass
-            self._serial = None
+        self._serial_if.close()
 
     def _publish_tick(self) -> None:
         effective_triggered = (
-            self._triggered if self._plugged_in else self.fail_safe_on_disconnect
+            self._serial_if.triggered
+            if self._serial_if.plugged_in
+            else self.fail_safe_on_disconnect
         )
 
         triggered_msg = Bool()
@@ -326,10 +150,10 @@ class EstopNode(Node):
         self.triggered_pub.publish(triggered_msg)
 
         plugged_msg = Bool()
-        plugged_msg.data = bool(self._plugged_in)
+        plugged_msg.data = bool(self._serial_if.plugged_in)
         self.plugged_pub.publish(plugged_msg)
 
-        self._publish_raw_dds(effective_triggered, self._plugged_in)
+        self._publish_raw_dds(effective_triggered, self._serial_if.plugged_in)
 
     def _publish_raw_dds(self, triggered: bool, plugged_in: bool) -> None:
         if self._dds_writer is None:

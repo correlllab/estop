@@ -16,6 +16,12 @@ ROS 2 package to bridge an Arduino-based emergency stop button to:
 - `plugged_in=false` when serial cannot be opened or data goes stale.
 - Fail-safe mode can force `triggered=true` while disconnected.
 
+## Architecture
+
+- `estop/serial_interface.py`: serial discovery, probe, parsing, stale handling, and reconnect.
+- `estop/estop_node.py`: ROS 2 + raw DDS publisher only.
+- `estop/serial_status_test.py`: standalone serial parser test executable.
+
 ## Arduino Firmware
 
 Flash [arduino/estop_serial.ino](arduino/estop_serial.ino) to your UNO.
@@ -41,10 +47,10 @@ uv pip install --python .venv310/bin/python pyserial cyclonedds
 
 ## Build
 
-From workspace root (one level above `src`):
+From ros2 workspace root (one level above `src`):
 
 ```bash
-colcon build --packages-select estop
+colcon build --paths src/estop
 source install/setup.bash
 ```
 
@@ -93,6 +99,17 @@ Optional topic override:
 ros2 run estop estop_raw_dds_subscriber -- --topic h12/estop_status_raw
 ```
 
+## Serial parser test (no ROS topics required)
+
+This directly exercises estop serial discovery + parsing:
+
+```bash
+cd /home/humanoid/ws_ctrl
+conda deactivate
+source install/setup.bash
+ros2 run estop estop_serial_status_test -- --serial-port /dev/serial/by-id/usb-Arduino__www.arduino.cc__0043_55338343539351817262-if00 --require-estop-signature
+```
+
 ## Safe unique estop port selection
 
 The node now supports robust matching with probe validation so it does not attach to the wrong serial device.
@@ -103,6 +120,13 @@ Recommended order:
 2. Set exact USB `serial_number` if your adapter exposes one.
 3. Optionally constrain by `usb_vid` and `usb_pid`.
 4. Keep `require_estop_signature=true` so the node only accepts devices emitting `ESTOP,BOOT` or `ESTOP,0|1`.
+
+Defaults tuned for unplug/replug robustness:
+
+- `probe_timeout_sec=3.0`
+- `line_stale_timeout_sec=10.0`
+- `stale_reopen_timeout_sec=20.0`
+- `reconnect_interval_sec=1.0`
 
 Example launch overrides:
 

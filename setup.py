@@ -22,6 +22,7 @@ setup(
         "console_scripts": [
             "estop_node = estop.estop_node:main",
             "estop_raw_dds_subscriber = estop.raw_dds_subscriber:main",
+            "estop_serial_status_test = estop.serial_status_test:main",
         ],
     },
 )
