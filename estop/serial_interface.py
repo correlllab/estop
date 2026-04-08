@@ -50,6 +50,7 @@ class EstopSerialConfig:
     post_open_delay_sec: float = 0.25
     require_estop_signature: bool = True
     line_stale_timeout_sec: float = 10.0
+    stale_connect_grace_sec: float = 1.5
     stale_reopen_timeout_sec: float = 20.0
     reconnect_interval_sec: float = 1.0
     allow_fallback_from_explicit_port: bool = False
@@ -81,6 +82,7 @@ class EstopSerialInterface:
         self.connected_port = ""
         self.next_connect_try = 0.0
         self.last_line_time = 0.0
+        self.connected_since = 0.0
         self.stale_active = False
 
         self.triggered = True
@@ -118,9 +120,10 @@ class EstopSerialInterface:
                         continue
                     if self.config.usb_pid >= 0 and info.pid != self.config.usb_pid:
                         continue
-                    if self.config.serial_number and (
-                        info.serial_number or ""
-                    ) != self.config.serial_number:
+                    if (
+                        self.config.serial_number
+                        and (info.serial_number or "") != self.config.serial_number
+                    ):
                         continue
                     if info.device:
                         candidates.append(info.device)
@@ -131,7 +134,9 @@ class EstopSerialInterface:
             candidates.extend(glob.glob(str(pattern)))
 
         # Prefer stable /dev/serial/by-id entries over ephemeral tty names.
-        return sorted(set(candidates), key=lambda p: (0 if "/dev/serial/by-id/" in p else 1, p))
+        return sorted(
+            set(candidates), key=lambda p: (0 if "/dev/serial/by-id/" in p else 1, p)
+        )
 
     def _connect(self, now: float) -> None:
         if serial is None:
@@ -162,7 +167,9 @@ class EstopSerialInterface:
             except Exception:
                 pass
             self.connected_port = port
-            self.last_line_time = time.monotonic()
+            now_connected = time.monotonic()
+            self.last_line_time = now_connected
+            self.connected_since = now_connected
             self.stale_active = False
             self.plugged_in = True
             self._log_info(f"Connected to estop device on {port}")
@@ -202,7 +209,9 @@ class EstopSerialInterface:
         deadline = time.monotonic() + max(0.05, self.config.probe_timeout_sec)
         lines = 0
         try:
-            while time.monotonic() < deadline and lines < max(1, self.config.probe_max_lines):
+            while time.monotonic() < deadline and lines < max(
+                1, self.config.probe_max_lines
+            ):
                 raw = ser.readline()
                 if not raw:
                     time.sleep(0.001)
@@ -256,7 +265,9 @@ class EstopSerialInterface:
 
             if got_data and self.stale_active:
                 self.stale_active = False
-                self._log_info(f"Estop serial stream recovered on {self.connected_port}")
+                self._log_info(
+                    f"Estop serial stream recovered on {self.connected_port}"
+                )
 
             if got_data:
                 self.plugged_in = True
@@ -264,6 +275,9 @@ class EstopSerialInterface:
             self._disconnect(str(exc))
 
     def _update_stale(self, now: float) -> None:
+        if now - self.connected_since < max(0.0, self.config.stale_connect_grace_sec):
+            return
+
         age = now - self.last_line_time
         if age <= self.config.line_stale_timeout_sec:
             return
@@ -303,6 +317,7 @@ class EstopSerialInterface:
         self._serial = None
         self.connected_port = ""
         self.plugged_in = False
+        self.connected_since = 0.0
         self.stale_active = False
         self.next_connect_try = time.monotonic() + self.config.reconnect_interval_sec
 

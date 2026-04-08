@@ -14,9 +14,10 @@ ROS 2 package to bridge an Arduino-based emergency stop button to:
 
 - Continuously attempts to connect to `/dev/ttyACM0` (configurable).
 - Parses serial lines from Arduino in format `ESTOP,0` / `ESTOP,1`.
-- Publishes status at fixed rate (`50 Hz` default) even when disconnected.
+- Publishes status at fixed rate (`100 Hz` default) even when disconnected.
 - Applies software debounce (`state_debounce_sec=0.08` default) to suppress spurious state flip-flops.
 - `plugged_in=false` when serial cannot be opened or data goes stale.
+- Applies startup stale grace (`stale_connect_grace_sec=1.5`) to avoid false stale warnings right after connect.
 - NOTE: Fail-safe mode forces `triggered=true` while disconnected.
 
 ## Architecture
@@ -151,8 +152,10 @@ Recommended order:
 Defaults tuned for unplug/replug robustness:
 
 - `probe_timeout_sec=3.0`
-- `line_stale_timeout_sec=10.0`
-- `stale_reopen_timeout_sec=20.0`
+- `publish_rate_hz=100.0`
+- `line_stale_timeout_sec=0.1`
+- `stale_connect_grace_sec=1.5`
+- `stale_reopen_timeout_sec=3.0`
 - `reconnect_interval_sec=1.0`
 
 Example launch overrides:

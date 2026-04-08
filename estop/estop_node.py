@@ -49,10 +49,11 @@ class EstopNode(Node):
         self.declare_parameter("probe_max_lines", 200)
         self.declare_parameter("post_open_delay_sec", 0.25)
         self.declare_parameter("require_estop_signature", True)
-        self.declare_parameter("publish_rate_hz", 50.0)
+        self.declare_parameter("publish_rate_hz", 100.0)
         self.declare_parameter("state_debounce_sec", 0.08)
-        self.declare_parameter("line_stale_timeout_sec", 10.0)
-        self.declare_parameter("stale_reopen_timeout_sec", 20.0)
+        self.declare_parameter("line_stale_timeout_sec", 0.1)
+        self.declare_parameter("stale_connect_grace_sec", 1.5)
+        self.declare_parameter("stale_reopen_timeout_sec", 3.0)
         self.declare_parameter("reconnect_interval_sec", 1.0)
         self.declare_parameter("allow_fallback_from_explicit_port", False)
         self.declare_parameter("fail_safe_triggered_on_disconnect", True)
@@ -71,7 +72,9 @@ class EstopNode(Node):
 
         serial_cfg = EstopSerialConfig(
             serial_port=str(self.get_parameter("serial_port").value),
-            serial_port_candidates=list(self.get_parameter("serial_port_candidates").value),
+            serial_port_candidates=list(
+                self.get_parameter("serial_port_candidates").value
+            ),
             serial_number=str(self.get_parameter("serial_number").value),
             usb_vid=int(self.get_parameter("usb_vid").value),
             usb_pid=int(self.get_parameter("usb_pid").value),
@@ -80,13 +83,22 @@ class EstopNode(Node):
             probe_timeout_sec=float(self.get_parameter("probe_timeout_sec").value),
             probe_max_lines=int(self.get_parameter("probe_max_lines").value),
             post_open_delay_sec=float(self.get_parameter("post_open_delay_sec").value),
-            require_estop_signature=bool(self.get_parameter("require_estop_signature").value),
+            require_estop_signature=bool(
+                self.get_parameter("require_estop_signature").value
+            ),
             state_debounce_sec=float(self.get_parameter("state_debounce_sec").value),
-            line_stale_timeout_sec=float(self.get_parameter("line_stale_timeout_sec").value),
+            line_stale_timeout_sec=float(
+                self.get_parameter("line_stale_timeout_sec").value
+            ),
+            stale_connect_grace_sec=float(
+                self.get_parameter("stale_connect_grace_sec").value
+            ),
             stale_reopen_timeout_sec=float(
                 self.get_parameter("stale_reopen_timeout_sec").value
             ),
-            reconnect_interval_sec=float(self.get_parameter("reconnect_interval_sec").value),
+            reconnect_interval_sec=float(
+                self.get_parameter("reconnect_interval_sec").value
+            ),
             allow_fallback_from_explicit_port=bool(
                 self.get_parameter("allow_fallback_from_explicit_port").value
             ),
@@ -103,7 +115,7 @@ class EstopNode(Node):
         self._dds_writer = None
         self._init_raw_dds()
 
-        self.create_timer(0.02, self._io_tick)
+        self.create_timer(0.01, self._io_tick)
         self.create_timer(1.0 / max(1.0, self.publish_rate_hz), self._publish_tick)
 
         serial_port_label = serial_cfg.serial_port or "AUTO"
