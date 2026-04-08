@@ -48,6 +48,16 @@ If you are using a venv without pip in this workspace, use `uv pip`:
 uv pip install --python .venv310/bin/python pyserial cyclonedds
 ```
 
+## USB Serial Access
+
+Run the following command to grant the current user access to the serial port:
+
+```bash
+# allow current user to access USB serial devices
+sudo usermod -a -G dialout $USER
+# then log out and back in
+```
+
 ## Build
 
 From ros2 workspace root (one level above `src`):
