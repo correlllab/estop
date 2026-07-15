@@ -85,11 +85,17 @@ class EstopSerialInterface:
         self.connected_since = 0.0
         self.stale_active = False
 
-        self.triggered = True
+        self.triggered = None
         self._raw_triggered = True
         self._pending_state: Optional[bool] = None
         self._pending_since = 0.0
-        self.plugged_in = False
+        self.plugged_in = None
+
+        while self.triggered is None and self.plugged_in is None:
+            self.tick()
+
+
+
 
     def tick(self) -> None:
         now = time.monotonic()
