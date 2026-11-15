@@ -185,6 +185,15 @@ class EstopSerialInterface:
         self.next_connect_try = now + self.config.reconnect_interval_sec
 
     def _open_and_probe(self, port: str):
+        if "://" in port:
+            # A pyserial URL (socket://host:port: the sims' estop box) has no
+            # exclusive lock or baud rate to set.
+            try:
+                ser = serial.serial_for_url(port, timeout=self.config.serial_timeout_sec)
+                ser.reset_input_buffer()
+            except Exception:
+                return None
+            return self._probe(ser)
         try:
             ser = serial.Serial(
                 port,
@@ -208,7 +217,10 @@ class EstopSerialInterface:
 
         if self.config.post_open_delay_sec > 0.0:
             time.sleep(self.config.post_open_delay_sec)
+        return self._probe(ser)
 
+    def _probe(self, ser):
+        """Return ser once it prints an estop line within the probe timeout, else close it."""
         if not self.config.require_estop_signature:
             return ser
 

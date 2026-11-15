@@ -175,3 +175,16 @@ ros2 run estop estop_node --ros-args \
   -p usb_pid:=67 \
   -p require_estop_signature:=true
 ```
+
+## The simulators' estop box
+
+`serial_port` may also be a pyserial URL (`socket://host:port`), opened with
+`serial.serial_for_url` and probed like a serial device. The H1-2's RoboCasa and Isaac sims
+serve the box's lines (`ESTOP,BOOT`, then `ESTOP,0|1` at 50 Hz) on
+`socket://127.0.0.1:<15700 + ROS_DOMAIN_ID>`, and `golem_bringup`'s `h12_sim.launch.py`
+points this node there, so the sim runs the same estop path as the real robot. ENTER on the
+sim's terminal or in its viewer toggles the button.
+
+```bash
+ros2 run estop estop_node --ros-args -p serial_port:=socket://127.0.0.1:15701
+```
